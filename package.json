@@ -4,7 +4,7 @@
   "description": "Kalkulator",
   "main": "index.js",
   "dependencies": {
-    "bottender": "^1.4.10"
+    "bottender": "^0.15.17"
   },
   "devDependencies": {},
   "scripts": {
