@@ -1,42 +1,242 @@
-const { LineBot } = require("bottender");
-const { createServer } = require("bottender/express");
+const line = require('@line/bot-sdk');
+const express = require('express');
+const dotenv = require('dotenv');
+const fetch = require('node-fetch');
+const { response } = require('express');
 
-const bot = new LineBot({
-  // ubah ke access token dan channelSecret dibawah, sesuai dengan yang ada di line console
-  accessToken: "XTWOt9SWjP5va2iH0bst9hWyApckB9XeLXEt3rIoWUE4PjnepSCz3RQhO+Djmlx4eqJxxmkPAIa0jorx7wsmg8s/wB4+TGDKLF6ZgodD8bCoTvUKLmAG/hnTak4UBVAC3+KO2QTuya57lCVyLJWmFgdB04t89/1O/w1cDnyilFU=",
-  channelSecret: "9dc242b72a51cd1df0fd925f0483b994"
-});bot.onEvent(async context => {
-  // 1. Pengecekan apakah bot menerima chat berupa text
-  if (context.event.isText) {
-    // 2. Ambil value text yang dikirim oleh user, simpan di variabel receivedMessage
-    const receivedMessage = context.event.text;
+dotenv.config();
+const PORT=process.env.PORT;
+const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
+const CHANNEL_SECRET = process.env.CHANNEL_SECRET;
 
-    // 3. Pengecekan apakah user mengirim 2 pasang string dengan spasi
-    // Contoh valid text: 1 3 | 4 2 | 10 23
-    if (receivedMessage.split(" ").length === 2) {
-      // 4. Menyimpan hasil split. Kalau messagenya: "1 3" splittedText akan berisi ["1", "3"]
-      const splittedText = receivedMessage.split(" ");
+const config = {
+  channelAccessToken: CHANNEL_ACCESS_TOKEN,
+  channelSecret: CHANNEL_SECRET
+};
 
-      // 5. Ambil 2 angka yang masih dalam bentuk string, sekaligus ubah menjadi Number (integer)
-      const first = Number(splittedText[0]);
-      const second = Number(splittedText[1]);
+const app = express();
 
-      // 6. Lakukan proses penjumlahan
-      const sumResult = first + second;
+// app.use(express.static('public'));
 
-      // 7. Balas pesan user dengan hasil penjumlahan 2 angka yang dikirim
-      await context.replyText(sumResult);
-    } else {
-      // 8. Beri respon kepada user jika format pesan yang diberikan tidak sesuai
-      await context.replyText(
-        "Maaf pesanmu tidak sesuai format, contoh yang benar: 1 3 atau 10 12"
-      );
-    }
-  }
+app.get('/', () => {
+  console.log("Hello world!");
+})
+
+app.post('/webhook', line.middleware(config), (req, res) => {
+  Promise
+    .all(req.body.events.map(handleEvent))
+    .then(result => res.json(result))
+    .catch(error => console.log("middleware error:", error));
 });
 
-const server = createServer(bot);
+const client = new line.Client(config);
+async function handleEvent(event) {
+  if (event.type !== 'message' || event.message.type !== 'text') {
+    return Promise.resolve(null);
+  }
 
-server.listen(process.env.PORT || 5000, () => {
-  console.log("server is running on port 5000...");
+  const parsedResponse = await parseCommand(event);
+
+  return client.replyMessage(event.replyToken, parsedResponse)
+};
+
+const shalatCommand = "sholat";
+const Help='help' || 'Help';
+async function parseCommand(event) {
+  if(event.message.text.includes(shalatCommand)) {
+    const cityKeyword = event.message.text.replace(shalatCommand, '').trim();
+    return (await handleShalatCommand(cityKeyword));
+  }
+  else if(event.message.text.includes(Help)){
+    return createTextResponse("Cara menggunakannya adalah dengan mengetik 'sholat (lokasi)'.\n\n Contoh : sholat Bekasi");
+  }
+  else {
+  return createTextResponse("Keyword Tidak Valid. Ketik 'help' untuk menunjukkan cara penggunaan");}
+}
+
+const createFlexResponse = (flexContent, context) => {
+  return {
+    type: 'flex',
+    altText: context,
+    contents: flexContent
+  }
+} 
+
+const createTextResponse = (textContent) => {
+  return {
+    type: 'text',
+    text: textContent
+  }
+}
+
+async function handleShalatCommand(cityKeyword) {
+  const shalatResponse = await fetchShalatData(cityKeyword);
+  
+  if(shalatResponse.status === okStatus) {
+    return createFlexResponse(
+      createSholatTimesContainer(shalatResponse, cityKeyword),
+      "Jadwal Sholat"
+    );
+  }
+  return createTextResponse(shalatResponse.message)
+}
+
+Date.prototype.yyyymmdd = function() {
+  var mm = this.getMonth() + 1; // getMonth() is zero-based
+  var dd = this.getDate();
+
+  return [this.getFullYear(),
+          (mm>9 ? '' : '0') + mm,
+          (dd>9 ? '' : '0') + dd
+         ].join('-');
+};
+
+const  errorStatus = "error";
+const okStatus = "ok";
+async function fetchShalatData(cityKeyword) {
+    
+  const shalatResponse = await fetch(`https://api.banghasan.com/sholat/format/json/kota/nama/${cityKeyword}`)
+    .then(response => {return response.json()})
+    .then(result => {
+      if(result.status === okStatus){
+        // if there is more than one city found, return the first one
+        const fetchedCityCode = result.kota[0].id;
+        const currDate = (new Date()).yyyymmdd();
+        
+        return fetch(`https://api.banghasan.com/sholat/format/json/jadwal/kota/${fetchedCityCode}/tanggal/${currDate}`)
+      }
+      throw new Error("Kota tidak valid");
+    })
+    .then(response => {return response.json()})
+    .then(result => {
+      if(result.status === okStatus) {
+        return result
+      }
+      throw new Error("jadwal fetch error");
+    })
+    .catch(error => {
+      return {
+        status: errorStatus,
+        message: error.message
+      }
+    });
+    
+  return shalatResponse;
+}
+
+const createSholatTimesContainer = (fetchResult, cityKeyword) => {
+  const selectedSholatTimeNames = [
+    "subuh",
+    "dzuhur",
+    "ashar",
+    "maghrib",
+    "isya"
+  ];
+
+  let containerJSON = {
+    type: "bubble",
+    header: {
+      type: "box",
+      layout: "vertical",
+      contents: [
+        {
+          type: "box",
+          layout: "vertical",
+          contents: [
+            {
+              type: "text",
+              text: "Jadwal Sholat",
+              align: "start",
+              size: "xl",
+              color: "#ffffff"
+            }
+          ]
+        },
+        {
+          type: "box",
+          layout: "vertical",
+          contents: [
+            {
+              type: "text",
+              text: `${cityKeyword}`,
+              size: "md",
+              color: "#ffffff",
+              weight: "bold"
+            }
+          ]
+        }
+      ],
+      height: "90px",
+      margin: "md",
+      spacing: "none"
+    },
+    body: {
+      type: "box",
+      layout: "vertical",
+      contents: []
+    },
+    styles: {
+      header: {
+        backgroundColor: "#00b900"
+      }
+    }
+  }
+
+  const sholatTimeItems = [];
+  selectedSholatTimeNames.forEach(sholatTime => {
+    sholatTimeItems.push(jadwalSholatItem(
+      sholatTime,
+      fetchResult.jadwal.data[sholatTime]
+    ))
+  });
+  containerJSON["body"]["contents"] = sholatTimeItems;
+  
+  return containerJSON;
+}
+
+const jadwalSholatItem = (sholatName, sholatTime) => {
+  return {
+    type: "box",
+    layout: "horizontal",
+    contents: [
+      {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "text",
+            text: `${sholatName}`,
+            align: "start",
+            size: "md"
+          }
+        ],
+        flex: 1,
+        paddingTop: "3px"
+      },
+      {
+        type: "box",
+        layout: "vertical", 
+        contents: [
+          {
+            type: "text",
+            text: `${sholatTime}`,
+            align: "start",
+            size: "lg",
+            weight: "bold"
+          }
+        ],
+        flex: 2,
+        paddingStart: "10px"
+      }
+    ],
+    height: "40px"
+  };
+}
+
+
+
+app.listen(PORT, () => {
+  let date = new Date().toString();
+  console.log(`Deployed on ${date}`);
+  console.log(`Listening on port: ${PORT}`);
 });
